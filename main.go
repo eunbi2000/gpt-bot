@@ -1,74 +1,73 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/jmorganca/ollama/api"
 )
 
 // Variables used for command line parameters
-var (
-	Token string
-)
+const Token = ""
 
-func init() {
-
-	flag.StringVar(&Token, "t", "", "Bot Token")
-	flag.Parse()
-}
+var client *discordgo.Session
+var apiClient *api.Client
 
 func main() {
-
-	// Create a new Discord session using the provided bot token.
-	dg, err := discordgo.New("Bot " + Token)
+	session, err := discordgo.New("Bot " + Token)
 	if err != nil {
-		fmt.Println("error creating Discord session,", err)
+		fmt.Println("Error creating Discord session:", err)
+		return
+	}
+	client = session
+	client.AddHandler(message)
+	apiClient = api.NewClient()
+	fmt.Println("Bot is online")
+	defer client.Close()
+	if err = client.Open(); err != nil {
+		fmt.Println("Error opening connection:", err)
 		return
 	}
 
-	// Register the messageCreate func as a callback for MessageCreate events.
-	dg.AddHandler(messageCreate)
-
-	// In this example, we only care about receiving message events.
-	dg.Identify.Intents = discordgo.IntentsGuildMessages
-
-	// Open a websocket connection to Discord and begin listening.
-	err = dg.Open()
-	if err != nil {
-		fmt.Println("error opening connection,", err)
-		return
-	}
-
-	// Wait here until CTRL-C or other term signal is received.
-	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
-	<-sc
-
-	// Cleanly close down the Discord session.
-	dg.Close()
+	scall := make(chan os.Signal, 1)
+	signal.Notify(scall, syscall.SIGINT, syscall.SIGTERM, syscall.SIGSEGV, syscall.SIGHUP)
+	<-scall
+	fmt.Println("\nBot shutting down.")
 }
 
-// This function will be called (due to AddHandler above) every time a new
-// message is created on any channel that the authenticated bot has access to.
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+func message(bot *discordgo.Session, message *discordgo.MessageCreate) {
 
 	// Ignore all messages created by the bot itself
-	// This isn't required in this specific example but it's a good practice.
-	if m.Author.ID == s.State.User.ID {
+	if message.Author.ID == bot.State.User.ID {
 		return
 	}
-	// If the message is "ping" reply with "Pong!"
-	if m.Content == "ping" {
-		s.ChannelMessageSend(m.ChannelID, "Pong!")
+
+	var latest api.GenerateResponse
+	var output string
+	generateContext := []int{} // TODO: Get conversation context
+
+	request := api.GenerateRequest{Model: "llama3", Prompt: message.Content, Context: generateContext}
+	fn := func(response api.GenerateResponse) error {
+		latest = response
+		output += response.Response
+		fmt.Print(response.Response)
+		return nil
 	}
 
-	// If the message is "pong" reply with "Ping!"
-	if m.Content == "pong" {
-		s.ChannelMessageSend(m.ChannelID, "Ping!")
+	// Log request details
+	fmt.Printf("Sending request to LLaMA: %+v\n", request)
+
+	err := apiClient.Generate(context.Background(), &request, fn)
+	if err != nil {
+		fmt.Println("Error generating response from LLaMA:", err)
+		bot.ChannelMessageSend(message.ChannelID, "There seems to be a problem, please cry to the developer")
+		return
 	}
+	fmt.Println(" \n ")
+	bot.ChannelMessageSend(message.ChannelID, output)
+	latest.Summary()
 }
